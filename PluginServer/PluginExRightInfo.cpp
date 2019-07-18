@@ -81,15 +81,15 @@ void CPluginExRightInfo::SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, 
 	vtReqStockID.reserve(nStockNum);
 	for (int n = 0; n < nStockNum; n++ )
 	{
-		std::wstring strCode;
-		CA::UTF2Unicode(req.body.vtReqExRightInfo[n].strStockCode.c_str(), strCode);
-		INT64 nStockID = m_pQuoteData->GetStockHashVal(strCode.c_str(), (StockMktType)req.body.vtReqExRightInfo[n].nStockMarket);
+		INT64 nStockID = IFTStockUtil::GetStockHashVal(req.body.vtReqExRightInfo[n].strStockCode.c_str(), 
+				(StockMktType)req.body.vtReqExRightInfo[n].nStockMarket);
 		if ( nStockID == 0 )
 		{
 			CHECK_OP(false, NOOP);
 			StockDataReq req_info;			
 			req_info.sock = sock;
 			req_info.req = req;
+			req_info.dwReqTick = ::GetTickCount();
 			ReplyDataReqError(&req_info, PROTO_ERR_STOCK_NOT_FIND, L"找不到股票！");
 			return;
 		}
@@ -115,6 +115,11 @@ void CPluginExRightInfo::NotifyQuoteDataUpdate(int nCmdID, INT64 nStockID)
 	CHECK_OP(false, NOOP);
 	//CHECK_RET(nCmdID == PROTO_ID_QUOTE && nStockID, NORET);
 	//CHECK_RET(m_pQuoteData, NORET);
+}
+
+void CPluginExRightInfo::NotifySocketClosed(SOCKET sock)
+{
+	DoClearReqInfo(sock);
 }
 
 void CPluginExRightInfo::OnMsgEvent(int nEvent,WPARAM wParam,LPARAM lParam)
@@ -315,4 +320,24 @@ void CPluginExRightInfo::FormatTimestampToDate(int nTimestamp, int nTimezone, st
 	char szBuf[32];
 	sprintf_s(szBuf, "%d-%02d-%02d", stTime->tm_year + 1900, stTime->tm_mon + 1, stTime->tm_mday);
 	strFmtTime = szBuf;
+}
+
+void CPluginExRightInfo::DoClearReqInfo(SOCKET socket)
+{
+	VT_STOCK_DATA_REQ& vtReq = m_vtReqData;
+
+	//清掉socket对应的请求信息
+	auto itReq = vtReq.begin();
+	while (itReq != vtReq.end())
+	{
+		if (*itReq && (*itReq)->sock == socket)
+		{
+			delete *itReq;
+			itReq = vtReq.erase(itReq);
+		}
+		else
+		{
+			++itReq;
+		}
+	}
 }

@@ -76,7 +76,7 @@
     </ResourceCompile>
     <Link>
       <AdditionalDependencies>uafxcwd.lib;Libcmtd.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <OutputFile>$(OutDir)$(ProjectName).dll</OutputFile>
+      <OutputFile>../../bin/debug/plugin/$(ProjectName).dll</OutputFile>
       <IgnoreSpecificDefaultLibraries>uafxcwd.lib;Libcmtd.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ModuleDefinitionFile>.\PluginServer.def</ModuleDefinitionFile>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -122,6 +122,8 @@
     <ClInclude Include="DelayOrderIDCvt_HK.h" />
     <ClInclude Include="DelayOrderIDCvt_US.h" />
     <ClInclude Include="FormatTime.h" />
+    <ClInclude Include="IFTStockUtil.h" />
+    <ClInclude Include="IFTStockUtilImpl.h" />
     <ClInclude Include="IManage_SecurityNum.h" />
     <ClInclude Include="Include\FTPluginCore.h" />
     <ClInclude Include="Include\FTPluginQuoteDefine.h" />
@@ -140,10 +142,12 @@
     <ClInclude Include="MsgHandler.h" />
     <ClInclude Include="PluginBasicPrice.h" />
     <ClInclude Include="PluginBatchBasic.h" />
+    <ClInclude Include="PluginBrokerQueue.h" />
     <ClInclude Include="PluginChangeOrder_HK.h" />
     <ClInclude Include="PluginChangeOrder_US.h" />
     <ClInclude Include="PluginExRightInfo.h" />
     <ClInclude Include="PluginGearPrice.h" />
+    <ClInclude Include="PluginGlobalState.h" />
     <ClInclude Include="PluginHistoryKL.h" />
     <ClInclude Include="PluginHKTradeServer.h" />
     <ClInclude Include="PluginKLData.h" />
@@ -151,6 +155,8 @@
     <ClInclude Include="PluginNetwork.h" />
     <ClInclude Include="PluginPlaceOrder_HK.h" />
     <ClInclude Include="PluginPlaceOrder_US.h" />
+    <ClInclude Include="PluginPlatesetIDs.h" />
+    <ClInclude Include="PluginPlateSubIDs.h" />
     <ClInclude Include="PluginPushBatchBasic.h" />
     <ClInclude Include="PluginPushGearPrice.h" />
     <ClInclude Include="PluginPushKLData.h" />
@@ -182,20 +188,25 @@
     <ClInclude Include="Protocol\CppJsonConv.h" />
     <ClInclude Include="Protocol\ProtoBasicPrice.h" />
     <ClInclude Include="Protocol\ProtoBatchBasic.h" />
+    <ClInclude Include="Protocol\ProtoBrokerQueue.h" />
     <ClInclude Include="Protocol\ProtoChangeOrder.h" />
     <ClInclude Include="Protocol\ProtoDataStruct.h" />
     <ClInclude Include="Protocol\ProtoDataStruct_Quote.h" />
     <ClInclude Include="Protocol\ProtoDataStruct_Trade.h" />
     <ClInclude Include="Protocol\ProtoExRightInfo.h" />
     <ClInclude Include="Protocol\ProtoGearPrice.h" />
+    <ClInclude Include="Protocol\ProtoGlobalState.h" />
     <ClInclude Include="Protocol\ProtoHistoryKL.h" />
     <ClInclude Include="Protocol\ProtoKLData.h" />
     <ClInclude Include="Protocol\ProtoOrderErrorPush.h" />
     <ClInclude Include="Protocol\ProtoOrderUpdatePush.h" />
     <ClInclude Include="Protocol\ProtoParseBase.h" />
     <ClInclude Include="Protocol\ProtoPlaceOrder.h" />
+    <ClInclude Include="Protocol\ProtoPlatesetIDs.h" />
+    <ClInclude Include="Protocol\ProtoPlateSubIDs.h" />
     <ClInclude Include="Protocol\ProtoPushBatchBasic.h" />
     <ClInclude Include="Protocol\ProtoPushGearPrice.h" />
+    <ClInclude Include="Protocol\ProtoPushHeartBeat.h" />
     <ClInclude Include="Protocol\ProtoPushKLData.h" />
     <ClInclude Include="Protocol\ProtoPushRTData.h" />
     <ClInclude Include="Protocol\ProtoPushStockData.h" />
@@ -236,6 +247,8 @@
     <ClCompile Include="DelayOrderIDCvt_HK.cpp" />
     <ClCompile Include="DelayOrderIDCvt_US.cpp" />
     <ClCompile Include="FormatTime.cpp" />
+    <ClCompile Include="IFTStockUtil.cpp" />
+    <ClCompile Include="IFTStockUtilImpl.cpp" />
     <ClCompile Include="IManage_SecurityNum.cpp" />
     <ClCompile Include="JsonCpp\json_op.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -265,10 +278,12 @@
     <ClCompile Include="MsgHandler.cpp" />
     <ClCompile Include="PluginBasicPrice.cpp" />
     <ClCompile Include="PluginBatchBasic.cpp" />
+    <ClCompile Include="PluginBrokerQueue.cpp" />
     <ClCompile Include="PluginChangeOrder_HK.cpp" />
     <ClCompile Include="PluginChangeOrder_US.cpp" />
     <ClCompile Include="PluginExRightInfo.cpp" />
     <ClCompile Include="PluginGearPrice.cpp" />
+    <ClCompile Include="PluginGlobalState.cpp" />
     <ClCompile Include="PluginHistoryKL.cpp" />
     <ClCompile Include="PluginHKTradeServer.cpp" />
     <ClCompile Include="PluginKLData.cpp" />
@@ -276,6 +291,8 @@
     <ClCompile Include="PluginNetwork.cpp" />
     <ClCompile Include="PluginPlaceOrder_HK.cpp" />
     <ClCompile Include="PluginPlaceOrder_US.cpp" />
+    <ClCompile Include="PluginPlatesetIDs.cpp" />
+    <ClCompile Include="PluginPlateSubIDs.cpp" />
     <ClCompile Include="PluginPushBatchBasic.cpp" />
     <ClCompile Include="PluginPushGearPrice.cpp" />
     <ClCompile Include="PluginPushKLData.cpp" />
@@ -307,18 +324,23 @@
     <ClCompile Include="Protocol\CppJsonConv.cpp" />
     <ClCompile Include="Protocol\ProtoBasicPrice.cpp" />
     <ClCompile Include="Protocol\ProtoBatchBasic.cpp" />
+    <ClCompile Include="Protocol\ProtoBrokerQueue.cpp" />
     <ClCompile Include="Protocol\ProtoChangeOrder.cpp" />
     <ClCompile Include="Protocol\ProtoDataStruct.cpp" />
     <ClCompile Include="Protocol\ProtoExRightInfo.cpp" />
     <ClCompile Include="Protocol\ProtoGearPrice.cpp" />
+    <ClCompile Include="Protocol\ProtoGlobalState.cpp" />
     <ClCompile Include="Protocol\ProtoHistoryKL.cpp" />
     <ClCompile Include="Protocol\ProtoKLData.cpp" />
     <ClCompile Include="Protocol\ProtoOrderErrorPush.cpp" />
     <ClCompile Include="Protocol\ProtoOrderUpdatePush.cpp" />
     <ClCompile Include="Protocol\ProtoParseBase.cpp" />
     <ClCompile Include="Protocol\ProtoPlaceOrder.cpp" />
+    <ClCompile Include="Protocol\ProtoPlatesetIDs.cpp" />
+    <ClCompile Include="Protocol\ProtoPlateSubIDs.cpp" />
     <ClCompile Include="Protocol\ProtoPushBatchBasic.cpp" />
     <ClCompile Include="Protocol\ProtoPushGearPrice.cpp" />
+    <ClCompile Include="Protocol\ProtoPushHeartBeat.cpp" />
     <ClCompile Include="Protocol\ProtoPushKLData.cpp" />
     <ClCompile Include="Protocol\ProtoPushRTData.cpp" />
     <ClCompile Include="Protocol\ProtoPushStockData.cpp" />

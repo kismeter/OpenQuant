@@ -22,11 +22,19 @@ enum
 	PROTO_ID_QT_GET_BATCHBASIC		= 1023,  //批量报价
 	PROTO_ID_QT_GET_HISTORYKL		= 1024,  //历史K线
 	PROTO_ID_QT_GET_EXRIGHTINFO		= 1025,  //复权因子
+	PROTO_ID_QT_GET_PLATESETIDS		= 1026,  //板块集合的列表
+	PROTO_ID_QT_GET_PLATESUBIDS		= 1027,  //板块下的股票列表
+	PROTO_ID_QT_GET_BROKER_QUEUE	= 1028,  //经纪队列
+	PROTO_ID_QT_GET_GLOBAL_STATE	= 1029,  //全局状态 
+
 	PROTO_ID_PUSH_BATCHPRICE        = 1030,  //推送报价
 	PROTO_ID_PUSH_GEARPRICE			= 1031,  //推送摆盘
 	PROTO_ID_PUSH_KLDATA			= 1032,  //推送K线
 	PROTO_ID_PUSH_TICKER			= 1033,  //推送逐笔
 	PROTO_ID_PUSH_RTDATA			= 1034,  //推送分时
+	PROTO_ID_PUSH_BROKER_QUEUE		= 1035,	 //推送经纪队列
+	PROTO_ID_PUSH_HEART_BEAT		= 1036,	 //心跳
+
 	PROTO_ID_QUOTE_MAX				= 1999,  
 
 	PROTO_ID_TRADE_HK_MIN			= 6003,	  
@@ -62,9 +70,9 @@ enum ProtoErrCode
 {
 	PROTO_ERR_NO_ERROR	= 0,
 
-	PROTO_ERR_UNKNOWN_ERROR = 400,
-	PROTO_ERR_VER_NOT_SUPPORT = 401,
-	PROTO_ERR_STOCK_NOT_FIND = 402,
+	PROTO_ERR_UNKNOWN_ERROR = 400,   //未知错误
+	PROTO_ERR_VER_NOT_SUPPORT = 401,  //版本号不支持
+	PROTO_ERR_STOCK_NOT_FIND = 402,   //未知股票
 	PROTO_ERR_COMMAND_NOT_SUPPORT = 403,
 	PROTO_ERR_PARAM_ERR = 404,
 	PROTO_ERR_FREQUENCY_ERR = 405,
@@ -74,10 +82,12 @@ enum ProtoErrCode
 
 	PROTO_ERR_SERVER_BUSY	= 501,
 	PROTO_ERR_SERVER_TIMEROUT = 502,
+	PROTO_ERR_NETWORK = 503,
 };
 
 //////////////////////////////////////////////////////////////////////////
 //通用协议头部
+#define  ProtoHead_Version  1 
 
 struct ProtoHead
 {
@@ -85,4 +95,12 @@ struct ProtoHead
 	int   nProtoID;
 	INT64 ddwErrCode;
 	std::string strErrDesc;
+
+	ProtoHead()
+	{
+		nProtoVer = ProtoHead_Version;
+		nProtoID = 0;
+		ddwErrCode = 0;
+	}
+
 };

@@ -84,6 +84,7 @@ void CPluginTickerPrice::SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, 
 		StockDataReq req_info;		
 		req_info.sock = sock;
 		req_info.req = req;
+		req_info.dwReqTick = ::GetTickCount();
 		ReplyDataReqError(&req_info, PROTO_ERR_PARAM_ERR, L"参数错误！");
 		return;
 	}
@@ -91,9 +92,7 @@ void CPluginTickerPrice::SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, 
 	CHECK_RET(req.head.nProtoID == nCmdID && req.body.nGetTickNum >= 0, NORET);
 	req.body.nGetTickNum = min(req.body.nGetTickNum, 1000);
 
-	std::wstring strCode;
-	CA::UTF2Unicode(req.body.strStockCode.c_str(), strCode);
-	INT64 nStockID = m_pQuoteData->GetStockHashVal(strCode.c_str(), (StockMktType)req.body.nStockMarket);
+	INT64 nStockID = IFTStockUtil::GetStockHashVal(req.body.strStockCode.c_str(), (StockMktType)req.body.nStockMarket);
 	if ( nStockID == 0 )
 	{
 		CHECK_OP(false, NOOP);
@@ -101,22 +100,17 @@ void CPluginTickerPrice::SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, 
 		req_info.nStockID = nStockID;
 		req_info.sock = sock;
 		req_info.req = req;
+		req_info.dwReqTick = ::GetTickCount();
 		ReplyDataReqError(&req_info, PROTO_ERR_STOCK_NOT_FIND, L"找不到股票！");
 		return;
 	}	
-
-	if ( m_mapStockIDCode.find(nStockID) == m_mapStockIDCode.end() )
-	{
-		StockMktCode &mkt_code = m_mapStockIDCode[nStockID];
-		mkt_code.nMarketType = req.body.nStockMarket;
-		mkt_code.strCode = req.body.strStockCode;
-	}
 
 	StockDataReq *pReqInfo = new StockDataReq;
 	CHECK_RET(pReqInfo, NORET);
 	pReqInfo->nStockID = nStockID;
 	pReqInfo->sock = sock;
 	pReqInfo->req = req;
+	pReqInfo->dwReqTick = ::GetTickCount();
 
 	VT_STOCK_DATA_REQ &vtReq = m_mapReqInfo[nStockID];	
 	vtReq.push_back(pReqInfo);
@@ -196,6 +190,12 @@ void CPluginTickerPrice::NotifyQuoteDataUpdate(int nCmdID, INT64 nStockID)
 	//tomodify 3.2
 	//热点接口的数据不用缓存
 }
+
+void CPluginTickerPrice::NotifySocketClosed(SOCKET sock)
+{
+	DoClearReqInfo(sock);
+}
+
 void CPluginTickerPrice::OnTimeEvent(UINT nEventID)
 {
 	if ( TIMER_ID_CLEAR_CACHE == nEventID )
@@ -244,8 +244,8 @@ void CPluginTickerPrice::ClearQuoteDataCache()
 				m_mapCacheData.erase(nStockID);
 				it_todel = m_mapCacheToDel.erase(it_todel);
 
-				StockMktCode stkMktCode;
-				if ( m_pQuoteServer && GetStockMktCode(nStockID, stkMktCode) )
+				StockMktCodeEx stkMktCode;
+				if ( m_pQuoteServer && IFTStockUtil::GetStockMktCode(nStockID, stkMktCode) )
 				{				
 					//m_pQuoteServer->SubscribeQuote(stkMktCode.strCode, (StockMktType)stkMktCode.nMarketType, QUOTE_SERVER_TYPE, false);					
 				}
@@ -295,7 +295,7 @@ void CPluginTickerPrice::HandleTimeoutReq()
 				continue;
 			}
 
-			if ( int(dwTickNow - pReq->dwReqTick) > 5000 )
+			if (int(dwTickNow - pReq->dwReqTick) > REQ_TIMEOUT_MILLISECOND)
 			{
 				CStringA strTimeout;
 				strTimeout.Format("BasicPrice req timeout, market=%d, code=%s", pReq->req.body.nStockMarket, pReq->req.body.strStockCode.c_str());
@@ -468,19 +468,6 @@ void CPluginTickerPrice::SetTimerClearCache(bool bStartOrStop)
 	}
 }
 
-bool CPluginTickerPrice::GetStockMktCode(INT64 nStockID, StockMktCode &stkMktCode)
-{
-	MAP_STOCK_ID_CODE::iterator it_find = m_mapStockIDCode.find(nStockID);
-	if ( it_find != m_mapStockIDCode.end())
-	{
-		stkMktCode = it_find->second;
-		return true;
-	}
-
-	CHECK_OP(false, NOOP);
-	return false;
-}
-
 void CPluginTickerPrice::ClearAllReqCache()
 {
 	MAP_STOCK_DATA_REQ::iterator it_stock = m_mapReqInfo.begin();
@@ -498,5 +485,36 @@ void CPluginTickerPrice::ClearAllReqCache()
 	m_mapReqInfo.clear();
 	m_mapCacheData.clear();
 	m_mapCacheToDel.clear();
-	m_mapStockIDCode.clear();
+}
+
+void CPluginTickerPrice::DoClearReqInfo(SOCKET socket)
+{
+	auto itmap = m_mapReqInfo.begin();
+	while (itmap != m_mapReqInfo.end())
+	{
+		VT_STOCK_DATA_REQ& vtReq = itmap->second;
+
+		//清掉socket对应的请求信息
+		auto itReq = vtReq.begin();
+		while (itReq != vtReq.end())
+		{
+			if (*itReq && (*itReq)->sock == socket)
+			{
+				delete *itReq;
+				itReq = vtReq.erase(itReq);
+			}
+			else
+			{
+				++itReq;
+			}
+		}
+		if (vtReq.size() == 0)
+		{
+			itmap = m_mapReqInfo.erase(itmap);
+		}
+		else
+		{
+			++itmap;
+		}
+	}
 }

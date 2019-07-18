@@ -18,6 +18,10 @@
 typedef CProtoPushRTData		CProtoQuote;
 
 
+#define  MsgEvent_Push_Triger_RTKLData_Error  400
+#define  Min_Tick_Interval_Req_RTKLData 5000  //5秒 
+
+
 //////////////////////////////////////////////////////////////////////////
 
 CPluginPushRTData::CPluginPushRTData()
@@ -25,8 +29,7 @@ CPluginPushRTData::CPluginPushRTData()
 	m_pQuoteData = NULL;
 	m_pQuoteServer = NULL;
 
-	m_bStartTimerClearCache = FALSE;
-	m_bStartTimerHandleTimeout = FALSE;
+	m_dwTickLastTrigerKLError = 0;
 }
 
 CPluginPushRTData::~CPluginPushRTData()
@@ -47,11 +50,9 @@ void CPluginPushRTData::Init(CPluginQuoteServer* pQuoteServer, IFTQuoteData*  pQ
 
 	m_pQuoteServer = pQuoteServer;
 	m_pQuoteData = pQuoteData;
-	m_TimerWnd.SetEventInterface(this);
-	m_TimerWnd.Create();
 
-	m_MsgHandler.SetEventInterface(this);
 	m_MsgHandler.Create();
+	m_MsgHandler.SetEventInterface(this);
 }
 
 void CPluginPushRTData::Uninit()
@@ -60,569 +61,95 @@ void CPluginPushRTData::Uninit()
 	{
 		m_pQuoteServer = NULL;
 		m_pQuoteData = NULL;
-		m_TimerWnd.Destroy();
-		m_TimerWnd.SetEventInterface(NULL);
-
-		m_MsgHandler.Close();
-		m_MsgHandler.SetEventInterface(NULL);
-
-		ClearAllReqCache();
 	}
 }
 
-void CPluginPushRTData::SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, SOCKET sock)
+void CPluginPushRTData::OnMsgEvent(int nEvent, WPARAM wParam, LPARAM lParam)
 {
-	CHECK_RET(nCmdID == PROTO_ID_QUOTE && sock != INVALID_SOCKET, NORET);
-	CHECK_RET(m_pQuoteData && m_pQuoteServer, NORET);
-
-	CProtoQuote proto;
-	CProtoQuote::ProtoReqDataType	req;
-	proto.SetProtoData_Req(&req);
-	if ( !proto.ParseJson_Req(jsnVal) )
+	if (nEvent == MsgEvent_Push_Triger_RTKLData_Error)
 	{
-		CHECK_OP(false, NORET);
-		StockDataReq req_info;
-		req_info.sock = sock;
-		req_info.req = req;
-		ReplyDataReqError(&req_info, PROTO_ERR_PARAM_ERR, L"参数错误！");
-		return;
-	}
-
-	CHECK_RET(req.head.nProtoID == nCmdID, NORET);
-
-	std::wstring strCode;
-	CA::UTF2Unicode(req.body.strStockCode.c_str(), strCode);
-	INT64 nStockID = m_pQuoteData->GetStockHashVal(strCode.c_str(), (StockMktType)req.body.nStockMarket);
-	if ( nStockID == 0 )
-	{
-		CHECK_OP(false, NOOP);
-		StockDataReq req_info;
-		req_info.nStockID = nStockID;
-		req_info.sock = sock;
-		req_info.req = req;
-		ReplyDataReqError(&req_info, PROTO_ERR_STOCK_NOT_FIND, L"找不到股票！");
-		return;
-	}	
-
-	if ( m_mapStockIDCode.find(nStockID) == m_mapStockIDCode.end() )
-	{
-		StockMktCode &mkt_code = m_mapStockIDCode[nStockID];
-		mkt_code.nMarketType = req.body.nStockMarket;
-		mkt_code.strCode = req.body.strStockCode;
-	}
-
-	StockDataReq *pReqInfo = new StockDataReq;
-	CHECK_RET(pReqInfo, NORET);
-	pReqInfo->nStockID = nStockID;
-	pReqInfo->sock = sock;
-	pReqInfo->req = req;
-	pReqInfo->dwLocalCookie = 0;
-	pReqInfo->dwReqTick = ::GetTickCount();
-
-	VT_STOCK_DATA_REQ &vtReq = m_mapReqInfo[nStockID];
-	bool bNeedSub = vtReq.empty();	
-	vtReq.push_back(pReqInfo);
-	QueryDataErrCode err_code = m_pQuoteServer->QueryStockRTData((DWORD*)&pReqInfo->dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QUOTE_SERVER_TYPE);
-	if ( bNeedSub )
-	{
-		bool bIsSub = m_pQuoteData->IsSubStockOneType(nStockID, StockSubType_RT);
-		if ( bIsSub )
-		{
-			DWORD dwTargetDate = -1;
-			if ( m_pQuoteData->IsRTDataExist(nStockID) )
-			{
-				//tomodify 3.1
-				Quote_StockRTData* pQuoteRT = NULL;
-				int nCount = 0;
-				if ( m_pQuoteData->FillRTData(nStockID, pQuoteRT, nCount) )
-				{
-					QuoteAckDataBody &ack = m_mapCacheData[nStockID];
-					ack.vtRTData.clear();
-					int nNum = 0;
-					for ( int n = 0; n < nCount; n++ )
-					{
-						PushRTDataAckItem item;
-						item.nDataStatus = pQuoteRT[n].nDataStatus;
-						if ( item.nDataStatus != 1 )
-						{
-							break;
-						}
-						wchar_t szTime[64] = {}; 
-						m_pQuoteData->TimeStampToStr(nStockID, pQuoteRT[n].dwTime,szTime);
-						item.strTime = szTime;
-						item.dwOpenedMins = pQuoteRT[n].dwOpenedMins;
-						item.nCurPrice = pQuoteRT[n].nCurPrice;
-						item.nLastClosePrice = pQuoteRT[n].nLastClosePrice;
-						item.nAvgPrice = pQuoteRT[n].nAvgPrice;
-						item.ddwTDVolume= pQuoteRT[n].ddwTDVolume;
-						item.ddwTDValue = pQuoteRT[n].ddwTDValue;
-						ack.vtRTData.push_back(item);
-						nNum++;
-					}
-					ack.nNum = nNum;
-				}
-				m_pQuoteData->DeleteRTDataPointer(pQuoteRT);
-				m_MsgHandler.RaiseEvent(EVENT_ID_ACK_REQUEST, 0, 0);
-			}
-			else
-			{
-				QueryDataErrCode err_code = m_pQuoteServer->QueryStockRTData((DWORD*)&pReqInfo->dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QUOTE_SERVER_TYPE);
-				if (err_code != QueryData_Suc)
-				{
-					ReplyDataReqError(&(*pReqInfo), PROTO_ERR_UNKNOWN_ERROR, L"拉取数据失败！");
-					MAP_STOCK_DATA_REQ::iterator it_stock = m_mapReqInfo.begin();
-					for ( ; it_stock != m_mapReqInfo.end(); )
-					{
-						INT64 nStockID2 = it_stock->first;
-						if ( nStockID2 == nStockID )
-						{
-							it_stock = m_mapReqInfo.erase(it_stock);
-						}
-					}
-					return;
-				}
-			}
-			SetTimerHandleTimeout(true);
-		}
-		else
-		{
-			////对vtReq中的每一个
-			for (size_t i = 0; i < vtReq.size(); i++)
-			{
-				StockDataReq *pReqAnswer = vtReq[i];
-				ReplyDataReqError(pReqAnswer, PROTO_ERR_UNSUB_ERR, L"股票未订阅！");
-			}
-			MAP_STOCK_DATA_REQ::iterator it_iterator = m_mapReqInfo.find(nStockID);
-			if ( it_iterator != m_mapReqInfo.end() )
-			{
-				it_iterator = m_mapReqInfo.erase(it_iterator);
-			}
-			return;
-		}
+		OnPushTrigerRTKLDataError();
 	}
 }
 
-void CPluginPushRTData::NotifyQuoteDataUpdate(int nCmdID, INT64 nStockID)
+void CPluginPushRTData::OnPushTrigerRTKLDataError()
 {
-	CHECK_RET(nCmdID == PROTO_ID_QUOTE && nStockID, NORET);
-	CHECK_RET(m_pQuoteData, NORET);
+	CHECK_RET(m_pQuoteServer, NORET);
 
-	bool bIsSub = m_pQuoteData->IsSubStockOneType(nStockID, StockSubType_RT);
-	if ( !bIsSub )
+	if (m_setPushTrigerRTKLError.size() == 0)
+	{
+		return;
+	}
+	DWORD dwTick = GetTickCount();
+	if (0 == m_dwTickLastTrigerKLError)
+	{
+		m_dwTickLastTrigerKLError = dwTick;
+		return;
+	}
+	if (dwTick - m_dwTickLastTrigerKLError < Min_Tick_Interval_Req_RTKLData)
 	{
 		return;
 	}
 
-	bool bInReq = (m_mapReqInfo.find(nStockID) != m_mapReqInfo.end());
-	bool bInCache = (m_mapCacheData.find(nStockID) != m_mapCacheData.end());
+	std::set<std::pair<INT64, int>> vtStock = m_setPushTrigerRTKLError;
+	m_setPushTrigerRTKLError.clear();
+	m_dwTickLastTrigerKLError = dwTick;
 
-	//可能因超时或者其它原因出错，请求在数据到达前提前返回了
-	if ( !bInReq && !bInCache )
+	std::set<std::pair<INT64, int>>::iterator it = vtStock.begin();
+	for (; it != vtStock.end(); it++)
 	{
-		//CHECK_OP(false, NOOP);
-		return;
-	}
+		INT64 nStockID = it->first;
 
-	//tomodify 3.2		
-	if ( m_pQuoteData->IsRTDataExist(nStockID) )
-	{
-		Quote_StockRTData* pQuoteRT = NULL;
-		int nCount = 0;
-		if ( (bInReq || bInCache) && m_pQuoteData->FillRTData(nStockID, pQuoteRT, nCount) )
+		StockMktCodeEx stMktCode;
+		if (IFTStockUtil::GetStockMktCode(nStockID, stMktCode))
 		{
-			QuoteAckDataBody &ack = m_mapCacheData[nStockID];
-			ack.vtRTData.clear();
-			int nNum = 0;
-			for ( int n = 0; n < nCount; n++ )
-			{
-				PushRTDataAckItem item;
-				item.nDataStatus = pQuoteRT[n].nDataStatus;
-				if ( item.nDataStatus != 1 )
-				{
-					break;
-				}
-				wchar_t szTime[64] = {}; 
-				m_pQuoteData->TimeStampToStr(nStockID, pQuoteRT[n].dwTime,szTime);
-				item.strTime = szTime;
-				item.dwOpenedMins = pQuoteRT[n].dwOpenedMins;
-				item.nCurPrice = pQuoteRT[n].nCurPrice;
-				item.nLastClosePrice = pQuoteRT[n].nLastClosePrice;
-				item.nAvgPrice = pQuoteRT[n].nAvgPrice;
-				item.ddwTDVolume= pQuoteRT[n].ddwTDVolume;
-				item.ddwTDValue = pQuoteRT[n].ddwTDValue;
-				ack.vtRTData.push_back(item);
-				nNum++;
-			}
-			ack.nNum = nNum;
-			m_MsgHandler.RaiseEvent(EVENT_ID_ACK_REQUEST, 0, 0);
+			std::string strCode = stMktCode.strCode;
+			DWORD dwCookie = 0;
+			m_pQuoteServer->QueryStockRTData(&dwCookie, strCode, stMktCode.eMarketType, QuoteServer_RTData);
 		}
-		m_pQuoteData->DeleteRTDataPointer(pQuoteRT);
-	}
-}
-
-void CPluginPushRTData::OnTimeEvent(UINT nEventID)
-{
-	if ( TIMER_ID_CLEAR_CACHE == nEventID )
-	{
-		ClearQuoteDataCache();
-	}
-	else if ( TIMER_ID_HANDLE_TIMEOUT_REQ == nEventID )
-	{
-		HandleTimeoutReq();
-	}
-}
-
-void CPluginPushRTData::OnMsgEvent(int nEvent,WPARAM wParam,LPARAM lParam)
-{
-	if ( EVENT_ID_ACK_REQUEST == nEvent )
-	{
-		ReplyAllReadyReq();
-	}	
-}
-
-void CPluginPushRTData::ClearQuoteDataCache()
-{
-	if ( m_mapCacheToDel.empty() )
-	{
-		SetTimerClearCache(false);
-		return ;
-	}
-
-	DWORD dwTickNow = ::GetTickCount();
-
-	MAP_CACHE_TO_DESTROY::iterator it_todel = m_mapCacheToDel.begin();
-	for ( ; it_todel != m_mapCacheToDel.end(); )
-	{
-		INT64 nStockID = it_todel->first;
-		DWORD dwToDelTick = it_todel->second;
-
-		MAP_STOCK_DATA_REQ::iterator it_req = m_mapReqInfo.find(nStockID);
-		if ( it_req != m_mapReqInfo.end() )
-		{
-			it_todel = m_mapCacheToDel.erase(it_todel);
-		}
-		else
-		{
-			if ( int(dwTickNow - dwToDelTick) > 60*1000  )
-			{
-				m_mapCacheData.erase(nStockID);
-				it_todel = m_mapCacheToDel.erase(it_todel);
-
-				StockMktCode stkMktCode;
-				if ( m_pQuoteServer && GetStockMktCode(nStockID, stkMktCode) )
-				{				
-					//m_pQuoteServer->SubscribeQuote(stkMktCode.strCode, (StockMktType)stkMktCode.nMarketType, QUOTE_SERVER_TYPE, false);					
-				}
-				else
-				{
-					CHECK_OP(false, NOOP);
-				}
-			}
-			else
-			{
-				++it_todel;
-			}			
-		}
-	}
-
-	if ( m_mapCacheToDel.empty() )
-	{
-		SetTimerClearCache(false);		
-	}
-}
-
-void CPluginPushRTData::HandleTimeoutReq()
-{
-	if ( m_mapReqInfo.empty() )
-	{
-		SetTimerHandleTimeout(false);
-		return;
-	}
-
-	ReplyAllReadyReq();
-
-	DWORD dwTickNow = ::GetTickCount();	
-	MAP_STOCK_DATA_REQ::iterator it_stock = m_mapReqInfo.begin();
-	for ( ; it_stock != m_mapReqInfo.end(); )
-	{
-		INT64 nStockID = it_stock->first;
-		VT_STOCK_DATA_REQ &vtReq = it_stock->second;
-		VT_STOCK_DATA_REQ::iterator it_req = vtReq.begin();
-
-		for ( ; it_req != vtReq.end(); )
-		{
-			StockDataReq *pReq = *it_req;
-			if ( pReq == NULL )
-			{
-				CHECK_OP(false, NOOP);
-				it_req = vtReq.erase(it_req);
-				continue;
-			}
-
-			if ( int(dwTickNow - pReq->dwReqTick) > 5000 )
-			{
-				CStringA strTimeout;
-				strTimeout.Format("RTData req timeout, market=%d, code=%s", pReq->req.body.nStockMarket, pReq->req.body.strStockCode.c_str());
-				OutputDebugStringA(strTimeout.GetString());				
-				ReplyDataReqError(pReq, PROTO_ERR_SERVER_TIMEROUT, L"请求超时！");
-				it_req = vtReq.erase(it_req);
-				delete pReq;
-			}
-			else
-			{
-				++it_req;
-			}
-		}
-
-		if ( vtReq.empty() )
-		{
-			//这里不用启动清缓定时器，因为这时没有缓存当前股票的数据
-			it_stock = m_mapReqInfo.erase(it_stock);			
-		}
-		else
-		{
-			++it_stock;
-		}
-	}
-
-	if ( m_mapReqInfo.empty() )
-	{
-		SetTimerHandleTimeout(false);
-		return;
-	}
-}
-
-void CPluginPushRTData::ReplyAllReadyReq()
-{
-	DWORD dwTickNow = ::GetTickCount();
-	MAP_STOCK_DATA_REQ::iterator it_stock = m_mapReqInfo.begin();
-	for ( ; it_stock != m_mapReqInfo.end(); )
-	{
-		INT64 nStockID = it_stock->first;
-		VT_STOCK_DATA_REQ &vtReq = it_stock->second;
-		MAP_STOCK_CACHE_DATA::iterator it_data = m_mapCacheData.find(nStockID);
-
-		if ( it_data == m_mapCacheData.end() )
-		{
-			++it_stock;
-			continue;
-		}
-
-		VT_STOCK_DATA_REQ::iterator it_req = vtReq.begin();
-		for ( ; it_req != vtReq.end(); ++it_req )
-		{
-			StockDataReq *pReq = *it_req;
-			CHECK_OP(pReq, NOOP);
-			ReplyStockDataReq(pReq, it_data->second);
-			delete pReq;
-		}
-
-		vtReq.clear();
-
-		it_stock = m_mapReqInfo.erase(it_stock);
-		m_mapCacheToDel[nStockID] = dwTickNow;
-		SetTimerClearCache(true);
-	}
-
-	if ( m_mapReqInfo.empty() )
-	{
-		SetTimerHandleTimeout(false);
-		return;
-	}
-}
-
-void CPluginPushRTData::ReplyStockDataReq(StockDataReq *pReq, const QuoteAckDataBody &data)
-{
-	CHECK_RET(pReq && m_pQuoteServer, NORET);
-
-	CProtoQuote::ProtoAckDataType ack;
-	ack.head = pReq->req.head;
-	ack.head.ddwErrCode = 0;
-	ack.body = data;
-
-	//tomodify 4
-	ack.body.nStockMarket = pReq->req.body.nStockMarket;
-	ack.body.strStockCode = pReq->req.body.strStockCode;
-
-	CProtoQuote proto;	
-	proto.SetProtoData_Ack(&ack);
-
-	Json::Value jsnAck;
-	if ( proto.MakeJson_Ack(jsnAck) )
-	{
-		std::string strOut;
-		CProtoParseBase::ConvJson2String(jsnAck, strOut, true);
-		m_pQuoteServer->ReplyQuoteReq(pReq->req.head.nProtoID, strOut.c_str(), (int)strOut.size(), pReq->sock);
-	}
-	else
-	{
-		CHECK_OP(false, NOOP);
-	}
-}
-
-void CPluginPushRTData::ReplyDataReqError(StockDataReq *pReq, int nErrCode, LPCWSTR pErrDesc)
-{
-	CHECK_RET(pReq && m_pQuoteServer, NORET);
-
-	CProtoQuote::ProtoAckDataType ack;
-	ack.head = pReq->req.head;
-	ack.head.ddwErrCode = nErrCode;
-
-	if ( pErrDesc )
-	{
-		CA::Unicode2UTF(pErrDesc, ack.head.strErrDesc);		 
-	}
-
-	CProtoQuote proto;	
-	proto.SetProtoData_Ack(&ack);
-
-	Json::Value jsnAck;
-	if ( proto.MakeJson_Ack(jsnAck) )
-	{
-		std::string strOut;
-		CProtoParseBase::ConvJson2String(jsnAck, strOut, true);
-		m_pQuoteServer->ReplyQuoteReq(pReq->req.head.nProtoID, strOut.c_str(), (int)strOut.size(), pReq->sock);
-	}
-	else
-	{
-		CHECK_OP(false, NOOP);
 	}
 
 }
 
-void CPluginPushRTData::SetTimerHandleTimeout(bool bStartOrStop)
+DWORD CPluginPushRTData::GetLastPushRT(INT64 ddwStockHash, SOCKET sock)
 {
-	if ( m_bStartTimerHandleTimeout )
+	std::vector<Stock_PushInfo> &vtInfoSingleSocket = m_mapPushInfo[sock];
+	for (std::vector<Stock_PushInfo>::iterator iter_find = vtInfoSingleSocket.begin(); iter_find != vtInfoSingleSocket.end(); iter_find++)
 	{
-		if ( !bStartOrStop )
-		{			
-			m_TimerWnd.StopTimer(TIMER_ID_HANDLE_TIMEOUT_REQ);
-			m_bStartTimerHandleTimeout = FALSE;
-		}
-	}
-	else
-	{
-		if ( bStartOrStop )
+		if (iter_find->ddwStockID == ddwStockHash)
 		{
-			m_TimerWnd.StartMillionTimer(500, TIMER_ID_HANDLE_TIMEOUT_REQ);
-			m_bStartTimerHandleTimeout = TRUE;
+			return iter_find->dwRTTime;
 		}
 	}
+	Stock_PushInfo NewItem;
+	NewItem.ddwStockID = ddwStockHash;
+	vtInfoSingleSocket.push_back(NewItem);
+	return NewItem.dwRTTime;
 }
 
-void CPluginPushRTData::SetTimerClearCache(bool bStartOrStop)
+bool CPluginPushRTData::SetLastPushRT(INT64 ddwStockHash, SOCKET sock, DWORD dwTime)
 {
-	if ( m_bStartTimerClearCache )
+	std::vector<Stock_PushInfo> &vtInfoSingleSocket = m_mapPushInfo[sock];
+	for (std::vector<Stock_PushInfo>::iterator iter_find = vtInfoSingleSocket.begin(); iter_find != vtInfoSingleSocket.end(); iter_find++)
 	{
-		if ( !bStartOrStop )
+		if (iter_find->ddwStockID == ddwStockHash)
 		{
-			m_TimerWnd.StopTimer(TIMER_ID_CLEAR_CACHE);
-			m_bStartTimerClearCache = FALSE;
+			iter_find->dwRTTime = dwTime;
+			return true;
 		}
 	}
-	else
-	{
-		if ( bStartOrStop )
-		{
-			m_TimerWnd.StartMillionTimer(50, TIMER_ID_CLEAR_CACHE);
-			m_bStartTimerClearCache = TRUE;
-		}
-	}
-}
-
-bool CPluginPushRTData::GetStockMktCode(INT64 nStockID, StockMktCode &stkMktCode)
-{
-	MAP_STOCK_ID_CODE::iterator it_find = m_mapStockIDCode.find(nStockID);
-	if ( it_find != m_mapStockIDCode.end())
-	{
-		stkMktCode = it_find->second;
-		return true;
-	}
-
-	CHECK_OP(false, NOOP);
 	return false;
 }
 
-void CPluginPushRTData::ClearAllReqCache()
+void CPluginPushRTData::PushStockData(INT64 nStockID, SOCKET sock)
 {
-	MAP_STOCK_DATA_REQ::iterator it_stock = m_mapReqInfo.begin();
-	for ( ; it_stock != m_mapReqInfo.end(); ++it_stock )
+	if (!m_pQuoteData->IsRTDataExist(nStockID))
 	{
-		VT_STOCK_DATA_REQ &vtReq = it_stock->second;
-		VT_STOCK_DATA_REQ::iterator it_req = vtReq.begin();
-		for ( ; it_req != vtReq.end(); ++it_req )
-		{
-			StockDataReq *pReq = *it_req;
-			delete pReq;
-		}
+		//容错处理
+		m_setPushTrigerRTKLError.insert(std::make_pair(nStockID, 0));
+		m_MsgHandler.RaiseEvent(MsgEvent_Push_Triger_RTKLData_Error, 0, 0);
 	}
-
-	m_mapReqInfo.clear();
-	m_mapCacheData.clear();
-	m_mapCacheToDel.clear();
-	m_mapStockIDCode.clear();
-}
-
-void CPluginPushRTData::SendAck(DWORD dwCookie, int nCSResult)
-{
-	MAP_STOCK_DATA_REQ::iterator it_stock = m_mapReqInfo.begin();
-	for ( ; it_stock != m_mapReqInfo.end(); ++it_stock )
-	{
-		VT_STOCK_DATA_REQ &vtReq = it_stock->second;
-		VT_STOCK_DATA_REQ::iterator it_req = vtReq.begin();
-		for ( ; it_req != vtReq.end(); ++it_req )
-		{
-			StockDataReq* pReq = *it_req;
-			INT64 nStockID = pReq->nStockID;
-			if (pReq->dwLocalCookie == dwCookie)
-			{
-				if ( nCSResult != 0)
-				{
-					////服务器返回错误
-				}
-				else
-				{	
-					Quote_StockRTData* pQuoteRT = NULL;
-					int nCount = 0;
-					if ( m_pQuoteData->FillRTData(nStockID, pQuoteRT, nCount) )
-					{
-						QuoteAckDataBody &ack = m_mapCacheData[nStockID];
-						ack.vtRTData.clear();
-						int nNum = 0;
-						for ( int n = 0; n < nCount; n++ )
-						{
-							PushRTDataAckItem item;
-							item.nDataStatus = pQuoteRT[n].nDataStatus;
-							if ( item.nDataStatus != 1 )
-							{
-								break;
-							}
-							wchar_t szTime[64] = {}; 
-							m_pQuoteData->TimeStampToStr(nStockID, pQuoteRT[n].dwTime,szTime);
-							item.strTime = szTime;
-							item.dwOpenedMins = pQuoteRT[n].dwOpenedMins;
-							item.nCurPrice = pQuoteRT[n].nCurPrice;
-							item.nLastClosePrice = pQuoteRT[n].nLastClosePrice;
-							item.nAvgPrice = pQuoteRT[n].nAvgPrice;
-							item.ddwTDVolume= pQuoteRT[n].ddwTDVolume;
-							item.ddwTDValue = pQuoteRT[n].ddwTDValue;
-							ack.vtRTData.push_back(item);
-							nNum++;
-						}
-						ack.nNum = nNum;
-						m_pQuoteData->DeleteRTDataPointer(pQuoteRT);
-						m_pQuoteData->CheckRemoveQuoteRT(nStockID);
-						m_MsgHandler.RaiseEvent(EVENT_ID_ACK_REQUEST, 0, 0);
-					}
-				}
-			}
-		}
-	}
-}
-
-void CPluginPushRTData::PushStockData(INT64 nStockID, SOCKET sock, DWORD dwTime)
-{
-	if ( m_pQuoteData->IsRTDataExist(nStockID) )
+	else
 	{
 		Quote_StockRTData* pQuoteRT = NULL;
 		int nCount = 0;
@@ -631,17 +158,23 @@ void CPluginPushRTData::PushStockData(INT64 nStockID, SOCKET sock, DWORD dwTime)
 			QuoteAckDataBody ackbody;
 			ackbody.vtRTData.clear();
 			int nNum = 0;
+			DWORD dwLastPushTime = GetLastPushRT(nStockID, sock);
+			DWORD dwMaxPushTime = dwLastPushTime;
 			for ( int n = 0; n < nCount; n++ )
 			{
 				PushRTDataAckItem item;
 				item.nDataStatus = pQuoteRT[n].nDataStatus;
-				if ( item.nDataStatus != 1 )
+				if (!IS_RTKL_VALID_PUSH_DATA_STATUS(pQuoteRT[n].nDataStatus))
 				{
 					break;
 				}
-				if ( pQuoteRT[n].dwTime <= dwTime )
+				if (pQuoteRT[n].dwTime < dwLastPushTime)
 				{
 					continue;
+				}
+				if (pQuoteRT[n].dwTime > dwMaxPushTime)
+				{
+					dwMaxPushTime = pQuoteRT[n].dwTime;
 				}
 				wchar_t szTime[64] = {}; 
 				m_pQuoteData->TimeStampToStr(nStockID, pQuoteRT[n].dwTime,szTime);
@@ -655,20 +188,24 @@ void CPluginPushRTData::PushStockData(INT64 nStockID, SOCKET sock, DWORD dwTime)
 				ackbody.vtRTData.push_back(item);
 				nNum++;
 			}
+			SetLastPushRT(nStockID, sock, dwMaxPushTime);
 			ackbody.nNum = nNum;
-
+			if (ackbody.vtRTData.size() > 5)
+			{
+				std::reverse(ackbody.vtRTData.begin(), ackbody.vtRTData.end());
+				ackbody.vtRTData.resize(1);
+				ackbody.nNum = 1;
+			}
 			CProtoQuote::ProtoAckDataType ack;
 			ack.head.nProtoID = PROTO_ID_PUSH_RTDATA;
 			ack.head.ddwErrCode = 0;
-			ack.head.nProtoVer = 1;
 			ack.body = ackbody;
 
 			StockMktType eMkt = StockMkt_HK;
-			wchar_t szStockCode[16] = {};
-			m_pQuoteData->GetStockInfoByHashVal(nStockID, eMkt, szStockCode);
+			wchar_t szStockCode[16] = {}, szStockName[128] = { 0 };
+			m_pQuoteData->GetStockInfoByHashVal(nStockID, eMkt, szStockCode, szStockName);
 			ack.body.nStockMarket = (int)eMkt;
-			std::wstring wstrStockCode = szStockCode;
-			ack.body.strStockCode.assign(wstrStockCode.begin(), wstrStockCode.end());
+			CA::Unicode2UTF(szStockCode, ack.body.strStockCode);
 
 			if (ack.body.vtRTData.size() > 0)
 			{
@@ -689,5 +226,41 @@ void CPluginPushRTData::PushStockData(INT64 nStockID, SOCKET sock, DWORD dwTime)
 			}
 		}
 		m_pQuoteData->DeleteRTDataPointer(pQuoteRT);
+	}
+}
+
+void CPluginPushRTData::NotifySocketClosed(SOCKET sock)
+{
+	auto itmap = m_mapPushInfo.find(sock);
+	if (itmap != m_mapPushInfo.end())
+	{
+		m_mapPushInfo.erase(itmap);
+	}
+}
+
+//市场切换了交易日，记录的推送信息要清掉 
+void CPluginPushRTData::NotifyMarketNewTrade(StockMktType eMkt)
+{
+	CHECK_RET(m_pQuoteData, NORET);
+
+	std::map<SOCKET, std::vector<Stock_PushInfo>>::iterator itmap = m_mapPushInfo.begin();
+	for (; itmap != m_mapPushInfo.end(); itmap++)
+	{
+		std::vector<Stock_PushInfo>& vtStock = itmap->second;
+		std::vector<Stock_PushInfo>::iterator itStock = vtStock.begin();
+		while (itStock != vtStock.end())
+		{
+			StockMktType eStockMkt = StockMkt_None;
+			wchar_t szStockCode[16] = {}, szStockName[128] = { 0 };
+			m_pQuoteData->GetStockInfoByHashVal(itStock->ddwStockID, eStockMkt, szStockCode, szStockName);
+			if (eMkt == eStockMkt)
+			{
+				itStock = vtStock.erase(itStock);
+			}
+			else
+			{
+				++itStock;
+			}
+		}
 	}
 }

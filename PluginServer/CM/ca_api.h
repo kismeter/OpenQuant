@@ -6,7 +6,7 @@
 #include <vector> 
 #include <shlobj.h>
 #include <math.h> 
-
+#include "CA_Lock.h"
 
 _CA_BEGIN
 
@@ -65,7 +65,10 @@ static void  Unicode2UTF(const WCHAR*wcsCnt,std::string&strRet)
 
 static void  UTF2Unicode(LPCSTR pstr, std::wstring & strContext)
 {
+	static CA::CCriticalSection  s_lock;
 	static std::vector<wchar_t> s_vtTemp;   
+
+	CA::CAutoLock<CA::CCriticalSection>  lock(&s_lock);
 
 	int nStrLen = pstr? strlen(pstr):0; 
 	strContext.clear(); 
@@ -160,7 +163,55 @@ static void DeleteNumStrTailZero(CString &str)
 	}
 }
 
+static BOOL DivStr(const CString& str, const CString &strDiv, std::vector<CString> &arDiv)
+{
+	if (str.GetLength() == 0 || strDiv.GetLength() == 0)
+	{
+		return false;
+	}
+	arDiv.clear();
+
+	CString strTmp = str;
+	LPCTSTR seps = (LPCTSTR)strDiv;
+	TCHAR* pstrSrc = strTmp.GetBuffer(strTmp.GetLength());
+	TCHAR* token = _tcstok(pstrSrc, seps);
+	while (token)
+	{
+		arDiv.push_back(CString(token));
+		token = _tcstok(NULL, seps);
+	}
+	return true;
+}
+
+
+//////////////////////////////////////////////////////////////////////////
+// 创建目录
+static BOOL CreateDirectory(CString strPath)
+{
+	ASSERT_RET(!strPath.IsEmpty(), FALSE);
+
+	if (strPath.Right(1) != _T("\\"))
+	{
+		//最后一位不是\则被认为路径带文件名
+		int nPos = strPath.ReverseFind('\\');
+		strPath = strPath.Left(nPos + 1);
+	}
+
+	int nPos = -1;
+	while ((nPos = strPath.Find('\\', nPos + 1)) > 0)
+	{
+		CString strTemp = strPath.Left(nPos + 1);
+		ASSERT_RET(!strTemp.IsEmpty(), FALSE);
+
+		if (!PathFileExists(strTemp))
+			ASSERT_RET(::CreateDirectory(strTemp, NULL), FALSE);
+	}
+
+	return TRUE;
+}
+
 _CA_END
 
 #endif
+
 

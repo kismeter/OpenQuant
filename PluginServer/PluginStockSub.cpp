@@ -85,39 +85,33 @@ void CPluginStockSub::SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, SOC
 		StockDataReq req_info;
 		req_info.sock = sock;
 		req_info.req = req;
+		req_info.dwReqTick = ::GetTickCount();
 		ReplyDataReqError(&req_info, PROTO_ERR_PARAM_ERR, L"参数错误！");
 		return;
 	}
 
 	CHECK_RET(req.head.nProtoID == nCmdID, NORET);
-	std::wstring strCode;
-	CA::UTF2Unicode(req.body.strStockCode.c_str(), strCode);
-	INT64 nStockID = m_pQuoteData->GetStockHashVal(strCode.c_str(), (StockMktType)req.body.nStockMarket);
+
+	INT64 nStockID = IFTStockUtil::GetStockHashVal(req.body.strStockCode.c_str(), (StockMktType)req.body.nStockMarket);
 	if ( nStockID == 0 )
 	{
-		CHECK_OP(false, NOOP);
 		StockDataReq req_info;
 		req_info.nStockID = nStockID;
 		req_info.sock = sock;
 		req_info.req = req;
+		req_info.dwReqTick = ::GetTickCount();
 		ReplyDataReqError(&req_info, PROTO_ERR_STOCK_NOT_FIND, L"找不到股票！");
 		return;
 	}	
 
 	//////////参数控制，需增加
 
-	if ( m_mapStockIDCode.find(nStockID) == m_mapStockIDCode.end() )
-	{
-		StockMktCode &mkt_code = m_mapStockIDCode[nStockID];
-		mkt_code.nMarketType = req.body.nStockMarket;
-		mkt_code.strCode = req.body.strStockCode;
-	}
-
 	StockDataReq *pReqInfo = new StockDataReq;
 	CHECK_RET(pReqInfo, NORET);
 	pReqInfo->nStockID = nStockID;
 	pReqInfo->sock = sock;
 	pReqInfo->req = req;
+	pReqInfo->dwReqTick = ::GetTickCount();
 
 	VT_STOCK_DATA_REQ &vtReq = m_mapReqInfo[std::make_pair(nStockID, req.body.nStockSubType)];
 	bool bNeedSub = vtReq.empty();	
@@ -125,86 +119,76 @@ void CPluginStockSub::SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, SOC
 
 	if ( bNeedSub )
 	{
-		/////需要先判断是否已经订阅
-		bool bIsSub = m_pQuoteData->IsSubStockOneType(nStockID, (StockSubType)req.body.nStockSubType);
-		if ( bIsSub )
+		StockSubErrCode SubResult = m_pQuoteServer->SubscribeQuote(req.body.strStockCode, (StockMktType)req.body.nStockMarket, (StockSubType)req.body.nStockSubType, true, sock);
+		if ( SubResult == StockSub_FailMaxSubNum )
 		{
-			////如果已订阅，不做操作
-		}
-		else
-		{
-			StockSubErrCode SubResult = m_pQuoteServer->SubscribeQuote(req.body.strStockCode, (StockMktType)req.body.nStockMarket, (StockSubType)req.body.nStockSubType, true);
-			if ( SubResult == StockSub_FailMaxSubNum )
+			////对vtReq中的每一个
+			for (size_t i = 0; i < vtReq.size(); i++)
 			{
-				////对vtReq中的每一个
-				for (size_t i = 0; i < vtReq.size(); i++)
-				{
-					StockDataReq *pReqAnswer = vtReq[i];
-					ReplyDataReqError(pReqInfo, PROTO_ERR_MAXSUB_ERR, L"已达到订阅上限！");
-				}
-				MAP_STOCK_DATA_REQ::iterator it_iterator = m_mapReqInfo.find(std::make_pair(nStockID, req.body.nStockSubType));
-				if ( it_iterator != m_mapReqInfo.end() )
-				{
-					it_iterator = m_mapReqInfo.erase(it_iterator);
-				}
-				return;
+				StockDataReq *pReqAnswer = vtReq[i];
+				ReplyDataReqError(pReqInfo, PROTO_ERR_MAXSUB_ERR, L"已达到订阅上限！");
 			}
-			else if ( SubResult == StockSub_Suc )
+			MAP_STOCK_DATA_REQ::iterator it_iterator = m_mapReqInfo.find(std::make_pair(nStockID, req.body.nStockSubType));
+			if ( it_iterator != m_mapReqInfo.end() )
 			{
-				DWORD dwLocalCookie = 0;
-				switch((StockSubType)req.body.nStockSubType)
+				it_iterator = m_mapReqInfo.erase(it_iterator);
+			}
+			return;
+		}
+		else if ( SubResult == StockSub_Suc )
+		{
+			DWORD dwLocalCookie = 0;
+			switch((StockSubType)req.body.nStockSubType)
+			{
+			case StockSubType_RT:
 				{
-				case StockSubType_RT:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockRTData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_RTData);
-					}
-					break;
-				case StockSubType_Ticker:
-					{
-
-					}
-					break;
-				case StockSubType_KL_MIN1:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)1);
-					}
-					break;
-				case StockSubType_KL_DAY:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)2);
-					}
-					break;
-				case StockSubType_KL_WEEK:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)3);
-					}
-					break;
-				case StockSubType_KL_MONTH:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)4);
-					}
-					break;
-				case StockSubType_KL_MIN5:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)6);
-					}
-					break;
-				case StockSubType_KL_MIN15:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)7);
-					}
-					break;
-				case StockSubType_KL_MIN30:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)8);
-					}
-					break;
-				case StockSubType_KL_MIN60:
-					{
-						QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)9);
-					}
-					break;
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockRTData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_RTData);
 				}
+				break;
+			case StockSubType_Ticker:
+				{
+				}
+				break;
+			case StockSubType_KL_MIN1:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)1);
+				}
+				break;
+			case StockSubType_KL_DAY:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)2);
+				}
+				break;
+			case StockSubType_KL_WEEK:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)3);
+				}
+				break;
+			case StockSubType_KL_MONTH:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)4);
+				}
+				break;
+			case StockSubType_KL_MIN5:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)6);
+				}
+				break;
+			case StockSubType_KL_MIN15:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)7);
+				}
+				break;
+			case StockSubType_KL_MIN30:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)8);
+				}
+				break;
+			case StockSubType_KL_MIN60:
+				{
+					QueryDataErrCode err_code = m_pQuoteServer->QueryStockKLData((DWORD*)&dwLocalCookie, pReqInfo->req.body.strStockCode, (StockMktType)pReqInfo->req.body.nStockMarket, QuoteServer_KLData, (int)9);
+				}
+				break;
 			}
 		}
 		QuoteAckDataBody &ack = m_mapCacheData[std::make_pair(nStockID, req.body.nStockSubType)];
@@ -229,6 +213,11 @@ void CPluginStockSub::NotifyQuoteDataUpdate(int nCmdID, INT64 nStockID)
 	//	return;
 	//}
 
+}
+
+void CPluginStockSub::NotifySocketClosed(SOCKET sock)
+{
+	DoClearReqInfo(sock);
 }
 
 void CPluginStockSub::OnTimeEvent(UINT nEventID)
@@ -280,8 +269,8 @@ void CPluginStockSub::ClearQuoteDataCache()
 				m_mapCacheData.erase(std::make_pair(nStockID, nStockSubType));
 				it_todel = m_mapCacheToDel.erase(it_todel);
 
-				StockMktCode stkMktCode;
-				if ( m_pQuoteServer && GetStockMktCode(nStockID, stkMktCode) )
+				StockMktCodeEx stkMktCode;
+				if ( m_pQuoteServer && IFTStockUtil::GetStockMktCode(nStockID, stkMktCode) )
 				{				
 					//m_pQuoteServer->SubscribeQuote(stkMktCode.strCode, (StockMktType)stkMktCode.nMarketType, QUOTE_SERVER_TYPE, false);					
 				}
@@ -332,7 +321,7 @@ void CPluginStockSub::HandleTimeoutReq()
 				continue;
 			}
 
-			if ( int(dwTickNow - pReq->dwReqTick) > 5000 )
+			if (int(dwTickNow - pReq->dwReqTick) > REQ_TIMEOUT_MILLISECOND)
 			{
 				CStringA strTimeout;
 				strTimeout.Format("StockSub req timeout, market=%d, code=%s", pReq->req.body.nStockMarket, pReq->req.body.strStockCode.c_str());
@@ -506,19 +495,6 @@ void CPluginStockSub::SetTimerClearCache(bool bStartOrStop)
 	}
 }
 
-bool CPluginStockSub::GetStockMktCode(INT64 nStockID, StockMktCode &stkMktCode)
-{
-	MAP_STOCK_ID_CODE::iterator it_find = m_mapStockIDCode.find(nStockID);
-	if ( it_find != m_mapStockIDCode.end())
-	{
-		stkMktCode = it_find->second;
-		return true;
-	}
-
-	CHECK_OP(false, NOOP);
-	return false;
-}
-
 void CPluginStockSub::ClearAllReqCache()
 {
 	MAP_STOCK_DATA_REQ::iterator it_stock = m_mapReqInfo.begin();
@@ -536,5 +512,38 @@ void CPluginStockSub::ClearAllReqCache()
 	m_mapReqInfo.clear();
 	m_mapCacheData.clear();
 	m_mapCacheToDel.clear();
-	m_mapStockIDCode.clear();
 }
+
+void CPluginStockSub::DoClearReqInfo(SOCKET socket)
+{
+	auto itmap = m_mapReqInfo.begin();
+	while (itmap != m_mapReqInfo.end())
+	{
+		VT_STOCK_DATA_REQ& vtReq = itmap->second;
+
+		//清掉socket对应的请求信息
+		auto itReq = vtReq.begin();
+		while (itReq != vtReq.end())
+		{
+			if (*itReq && (*itReq)->sock == socket)
+			{
+				delete *itReq;
+				itReq = vtReq.erase(itReq);
+			}
+			else
+			{
+				++itReq;
+			}
+		}
+		if (vtReq.size() == 0)
+		{
+			itmap = m_mapReqInfo.erase(itmap);
+		}
+		else
+		{
+			++itmap;
+		}
+	}
+}
+
+

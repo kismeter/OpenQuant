@@ -11,6 +11,9 @@ Date: 2015-03-18
 Description: 行情API和回调接口定义
 **************************************************/
 
+//协议请求超时
+#define REQ_TIMEOUT_MILLISECOND   10000
+
 /**
 *股票的市场类型
 */
@@ -24,6 +27,7 @@ enum StockMktType
 	StockMkt_Feature_Old = 5,  //旧的期货 code: 999000, 999001 （旧期货分时数据在一天连续）
 	StockMkt_Feature_New = 6,  //新期货 code: 999010, 999011 （新期货分时数据会跨天，与传统软件保持一致）
 };
+#define  IsValidMktID(mkt)  ((int)mkt >= (int)StockMkt_HK && (int)mkt <= (int)StockMkt_Feature_New)
 
 enum StockSubErrCode
 {
@@ -44,12 +48,15 @@ enum QueryDataErrCode
 	QueryData_FailCodeNoFind = 3,	//代码没找到(也有可能是市场类型错了)
 	QueryData_FailGuidNoFind = 4,	//插件GUID传错
 	QueryData_FailNoImplInf = 5,		//行情接口未完成
-	QueryData_IsExisted = 6,
+	
 	QueryData_FailFreqLimit = 7,	//查询频率限制导致失败
+	QueryData_FailNetwork = 8,		//网络异常，发送失败
+	QueryData_FailErrParam = 9,		//参数错误
 };
 
 enum StockSubType
 {
+	StockSubType_None = 0,
 	StockSubType_Simple = 1,
 	StockSubType_Gear = 2,
 	StockSubType_Ticker = 4,
@@ -62,6 +69,28 @@ enum StockSubType
 	StockSubType_KL_MIN1 = 11,
 	StockSubType_KL_WEEK = 12,
 	StockSubType_KL_MONTH = 13,
+	StockSubType_Broker = 14, //定阅经纪队列
+
+	StockSubType_Max = StockSubType_Broker + 1,
+};
+
+#define  IsStockSubType_RTKL(eType)  (StockSubType_RT == eType || StockSubType_KL_DAY == eType || StockSubType_KL_MIN5 == eType ||  \
+									  StockSubType_KL_MIN15 == eType || StockSubType_KL_MIN30 == eType || StockSubType_KL_MIN60 == eType ||  \
+									  StockSubType_KL_MIN1 == eType || StockSubType_KL_WEEK == eType || StockSubType_KL_MONTH == eType)
+
+
+//IFTQuoteOperation::QueryStockKLData的nKLType 类型 
+enum
+{
+	FT_KL_CLASS_MIN_1 = 1,
+	FT_KL_CLASS_DAY = 2,
+	FT_KL_CLASS_WEEK = 3,
+	FT_KL_CLASS_MONTH = 4,
+	FT_KL_CLASS_YEAR = 5,
+	FT_KL_CLASS_MIN_5 = 6,
+	FT_KL_CLASS_MIN_15 = 7,
+	FT_KL_CLASS_MIN_30 = 8,
+	FT_KL_CLASS_MIN_60 = 9,
 };
 
 enum PluginSecurityType
@@ -113,6 +142,21 @@ typedef struct tagPluginTickItem
 	INT64 nTurnover; //成交额
 }PluginTickItem, *LPPluginTickItem;
 
+enum RTKL_DATA_STATUS
+{
+	RTKL_DATA_STATUS_NULL = 0,
+	RTKL_DATA_STATUS_OVER = 1,		//完成
+	RTKL_DATA_STATUS_HALT = 2,    //停牌 
+	RTKL_DATA_STATUS_RUNNING = 3,	   //交易中 
+	RTKL_DATA_STATUS_FAKED = 4,		//伪造假数据 
+	RTKL_DATA_STATUS_NO_OCCUR = 5,     //未发生的	
+	RTKL_DATA_STATUS_CLIENT_FILL = 6,	//客户端自动补的点，除开补点时逻辑不同外其它等同FG_RT_DATA_NO_OCCUR，参考BugID:5073
+	RTKL_DATA_STATUS_FACK_FUTURE = 7, //未来点，也是fake状态的一种
+};
+
+//定义可以对外push有效点
+#define  IS_RTKL_VALID_PUSH_DATA_STATUS(nStatus) (RTKL_DATA_STATUS_NULL != nStatus && RTKL_DATA_STATUS_FAKED != nStatus && RTKL_DATA_STATUS_NO_OCCUR != nStatus && RTKL_DATA_STATUS_FACK_FUTURE != nStatus)
+
 /**
 * 分时数据
 */
@@ -155,7 +199,12 @@ typedef struct tagQueryStockKLData
 typedef struct tagSubInfo
 {
 	INT64 ddwStockHash;
-	int   nStockSubType;
+	StockSubType eStockSubType;
+	bool operator==(const tagSubInfo &Item) const
+	{
+		return (this->ddwStockHash == Item.ddwStockHash && this->eStockSubType == Item.eStockSubType);
+	};
+
 }Quote_SubInfo, *LPQuote_SubInfo;
 
 //nKLType:
@@ -194,6 +243,9 @@ typedef struct tagPluginStockInfo
 	PluginSecurityType nSecType;
 	WCHAR chSimpName[64];
 	WCHAR chCodeSig[16];
+	int nSubType; 
+	INT64 nOwnerStockID;
+	WCHAR chListDate[12];
 }PluginStockInfo, *LPPluginStockInfo;
 
 typedef struct tagBatchBasic
@@ -279,12 +331,24 @@ struct PluginExRightItem
 	wchar_t tc_txt[160];
 };
 
+enum Quote_WarrantType
+{
+	Quote_WarrantType_Buy = 1,  //认购
+	Quote_WarrantType_Sell = 2, //认沽
+	Quote_WarrantType_Bull = 3, //牛
+	Quote_WarrantType_Bear = 4, //熊
+};
+
 // 股票的行情快照数据
 struct PluginStockSnapshot
 {
+	PluginStockSnapshot()
+	{
+		memset(this, 0, sizeof(*this));
+	}
 	INT64 stock_id;    // 股票id
 	int  ret;    // 是否找到快照记录，0为成功找到，snapshot有数据。其他值，snapshot无数据（可能是找不到股票）
-	char   stock_code[16];
+	//char   stock_code[16];
 	UINT instrument_type;
 	UINT market_code;
 
@@ -304,6 +368,47 @@ struct PluginStockSnapshot
 	double highest_price;
 	double lowest_price;
 	float  turnover_ratio;
+
+	//每手
+	UINT32  nLotSize;
+
+	//正股类型数据
+	struct tagEquitiesData
+	{
+		bool bDataValid; //数据是否有效
+		UINT64 nIssuedShares; //发行股本,即总股本
+		double dbNetAssetValue; //资产净值
+		double dbNetProfit; //盈利（亏损）
+		double dbEarningPerShare; //每股盈利
+		UINT64 nOutStandingShares; //流通股本
+		double dbNetAssetPerShare; //每股净资产
+		double dbEYRatio; //收益率
+		double dbPERatio; //市盈率
+		double dbPBRatio; //市净率 
+	}stEquitiesData;
+
+	//涡轮相关数据
+	struct tagWarrantsData
+	{
+		bool bDataValid;  //如果非涡轮 == 0
+		UINT32 nConversionRatio; //换股比率
+		int  nWarrantType;  //涡轮类型 Quote_WarrantType
+		double dbStrikePrice; //行使价
+		INT64  nMaturityDate; //到期日
+		INT64 nEndtradeDate;  //最后交易日
+		INT64 nWarrantOwnerID; //正股ID
+
+		UINT32 nIssuerCode; //发行商id
+		char  strIssuerName[64]; //发行商名字
+		double dbRecoveryPrice; //回收价
+		UINT64 nStreetVol;  //街货量
+		UINT64 nIssueVol;  //发行量
+		double dbOwnerStockPrice;  //正股价格
+		double dbStreetRatio; //街货占比
+		double dbDelta;	 //对冲值
+		double dbImpliedVolatility; //引伸波幅
+		double dbPremiun; //溢价		
+	}stWrtData;
 };
 
 typedef struct tagStockPushInfo
@@ -334,3 +439,63 @@ typedef struct tagStockPushInfo
 		dwRTTime = 0;
 	}
 }Stock_PushInfo, *LPStock_PushInfo;
+
+//经纪队列
+typedef struct tagQuoteBrokerItem
+{
+	bool bAskOrBid;  //ask=卖  bid=买 
+	int nBrokerID;
+	int nBrokerPos;
+	char strBrokerName[32];
+}Quote_BrokerItem, *LPQuote_BrokerItem;
+
+
+enum FT_MARKET_STATUS
+{
+	FT_MARKET_STATUS_NONE = 0, //无交易，			美股的未开盘
+	FT_MARKET_STATUS_JJJY = 1, //竞价交易
+	FT_MARKET_STATUS_WAITOPEN = 2,   //早盘前等待开盘
+	FT_MARKET_STATUS_MORNING = 3,     //早盘,		
+	FT_MARKET_STATUS_NOON_REST = 4,   //午休
+	FT_MARKET_STATUS_NOON_TRADE = 5,  //午盘 (美股的盘中)
+	FT_MARKET_STATUS_TRADE_OVER = 6, //交易日结束,	美股的已收盘
+	FT_MARKET_STATUS_BEFORE_BEGIN = 8, //美股的盘前开始
+	FT_MARKET_STATUS_BEFORE_END = 9,	//美股的盘前结束
+	FT_MARKET_STATUS_AFTER_BEGIN = 10,	//美股的盘后开始
+	FT_MARKET_STATUS_AFTER_END = 11,	//美股的盘后结束
+	FT_MARKET_STATUS_FUTU_SWITCH_DATE = 12, //富途的切换交易状态，专门用来只是切一下交易日
+
+	FT_MARKET_STATUS_FUTURE_NIGHT_TRADE = 13,//夜市交易中
+	FT_MARKET_STATUS_FUTURE_NIGHT_END = 14,//夜市收盘
+	FT_MARKET_STATUS_FUTURE_DAY_TRADE = 15,//日市交易中
+	FT_MARKET_STATUS_FUTURE_DAY_BREAK = 16, //日市午休
+	FT_MARKET_STATUS_FUTURE_DAY_CLOSE = 17, //日市收盘
+	FT_MARKET_STATUS_FUTURE_DAY_WAIT_OPEN = 18, //日市等待开盘
+
+	FT_MARKET_STATUS_HK_CLOSING_AUCTION = 19, //港股盘后竞价
+};
+
+//全局状态 
+typedef struct tagNNGlobalState
+{
+	bool bQuoteSvrLogined;
+	bool bTradeSvrLogined;
+
+	FT_MARKET_STATUS eMktHK;
+	FT_MARKET_STATUS eMktHKFuture;
+	FT_MARKET_STATUS eMktUS;
+	FT_MARKET_STATUS eMktSH;
+	FT_MARKET_STATUS eMktSZ;
+
+	tagNNGlobalState()
+	{
+		bQuoteSvrLogined = false;
+		bTradeSvrLogined = false;
+
+		eMktHK = FT_MARKET_STATUS_NONE;
+		eMktHKFuture = FT_MARKET_STATUS_NONE;
+		eMktUS = FT_MARKET_STATUS_NONE;
+		eMktSH = FT_MARKET_STATUS_NONE;
+		eMktSZ = FT_MARKET_STATUS_NONE;
+	}
+}NNGlobalState;

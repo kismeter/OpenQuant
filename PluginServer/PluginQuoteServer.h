@@ -24,6 +24,10 @@
 #include "PluginPushTickerPrice.h"
 #include "PluginPushKLData.h"
 #include "PluginPushRTData.h"
+#include "PluginPlatesetIDs.h"
+#include "PluginPlateSubIDs.h"
+#include "PluginBrokerQueue.h"
+#include "PluginGlobalState.h"
 
 class CPluginNetwork;
 
@@ -49,9 +53,20 @@ enum QuoteServerType
 	QuoteServer_PushTickerPrice = 18,
 };
 
+struct tagRTKLDataRefresh
+{
+	INT64 ddwStockHash;
+	StockSubType eStockSubType;
+	DWORD dwReqCookie;
+	int nTryCount;
+	int nWaitSecs;
+	tagRTKLDataRefresh();
+};
+
 class CPluginQuoteServer: 	
 	public IQuoteInfoCallback,
-	public IQuoteKLCallback
+	public IQuoteKLCallback,
+	public CTimerWndInterface
 {
 public:
 	CPluginQuoteServer();
@@ -62,27 +77,50 @@ public:
 	void SetQuoteReqData(int nCmdID, const Json::Value &jsnVal, SOCKET sock);
 	void ReplyQuoteReq(int nCmdID, const char *pBuf, int nLen, SOCKET sock);
 
-	StockSubErrCode SubscribeQuote(const std::string &strCode, StockMktType nMarketType,  StockSubType eStockSubType, bool bSubOrUnsub);
+	StockSubErrCode SubscribeQuote(const std::string &strCode, StockMktType nMarketType, StockSubType eStockSubType, bool bSubOrUnsub, SOCKET sock);
 	QueryDataErrCode QueryStockRTData(DWORD* pCookie, const std::string &strCode, StockMktType nMarketType, QuoteServerType type);
 	QueryDataErrCode QueryStockKLData(DWORD* pCookie, const std::string &strCode, StockMktType nMarketType, QuoteServerType type, int nKLType);
 	void CloseSocket(SOCKET sock);
+
+	QueryDataErrCode QueryPlatesetSubIDList(DWORD* pdwCookie, INT64 nPlatesetID);
+	QueryDataErrCode QueryPlateSubIDList(DWORD* pdwCookie, INT64 nPlateID);
+
 protected:
 	//IQuoteInfoCallback
 	virtual void  OnChanged_PriceBase(INT64  ddwStockHash); 
 	virtual void  OnChanged_OrderQueue(INT64 ddwStockHash); 
+	virtual void  OnChanged_BrokerQueue(INT64 ddwStockHash);
 	virtual void  OnChanged_RTData(INT64 ddwStockHash);
 	virtual void  OnChanged_KLData(INT64 ddwStockHash, int nKLType);
 	virtual void  OnReqStockSnapshot(DWORD dwCookie, PluginStockSnapshot *arSnapshot, int nSnapshotNum);
 
 	virtual void  OnPushPriceBase(INT64 ddwStockHash, SOCKET sock);
 	virtual void  OnPushGear(INT64 ddwStockHash, SOCKET sock);
-	virtual void  OnPushTicker(INT64 ddwStockHash, SOCKET sock, INT64 nSequence);
-	virtual void  OnPushKL(INT64  ddwStockHash, SOCKET sock, StockSubType eStockSubType, DWORD dwTime);
-	virtual void  OnPushRT(INT64  ddwStockHash, SOCKET sock, DWORD dwTime);
+	virtual void  OnPushTicker(INT64 ddwStockHash, SOCKET sock);
+	virtual void  OnPushKL(INT64  ddwStockHash, SOCKET sock, StockSubType eStockSubType);
+	virtual void  OnPushRT(INT64  ddwStockHash, SOCKET sock);
+	virtual void  OnPushBrokerQueue(INT64 ddwStockHash, SOCKET sock);
+	virtual void  OnPushMarketNewTrade(StockMktType eMkt, INT64 ddwLastTradeStamp, INT64 ddwNewTradeStamp);
+	virtual void  OnPushHeartBeat(SOCKET sock, UINT64 nTimeStampNow);
 
 	//IQuoteKLCallback
 	virtual void  OnQueryStockRTData(DWORD dwCookie, int nCSResult);
 	virtual void  OnQueryStockKLData(DWORD dwCookie, int nCSResult);
+
+	//°å¿éÇëÇó
+	virtual void  OnReqPlatesetIDs(int nCSResult, DWORD dwCookie);
+	virtual void  OnReqPlateStockIDs(int nCSResult, DWORD dwCookie);
+
+	//CTimerWndInterface
+	virtual void OnTimeEvent(UINT nEventID);
+
+private:
+	bool DoKLSubTypeConvert(StockSubType eType, int& nKLType);
+	void DoTryRefreshRTKLData(INT64 ddwStockHash, StockSubType eSubType);
+	void DoCheckRTKLFreshReq(DWORD dwCookie, int nCSResult);
+
+	void DoKillTimerRefreshRTKL();
+	void DoStartTimerRefreshRTKL();
 
 protected:
 	IFTPluginCore		*m_pPluginCore;
@@ -94,21 +132,37 @@ protected:
 	CPluginBasicPrice	m_BasicPrice;
 	CPluginGearPrice	m_GearPrice;
 	CPluginRTData		m_RTData;
+
 	CPluginKLData		m_KLData;
 	CPluginStockSub		m_StockSub;
 	CPluginStockUnSub	m_StockUnSub;
+
 	CPluginQueryStockSub m_QueryStockSub;
 	CPluginTradeDate	m_TradeDate;
 	CPluginStockList	m_StockList;
+
 	CPluginBatchBasic   m_BatchBasic;
 	CPluginTickerPrice  m_TickerPrice;
 	CPluginSnapshot		m_Snapshot;
+
 	CPluginHistoryKL	m_HistoryKL;
 	CPluginExRightInfo  m_ExRightInfo;
 	CPluginPushStockData m_PushStockData;
+
 	CPluginPushBatchBasic m_PushBatchBasic;
 	CPluginPushGearPrice m_PushGearPrice;
 	CPluginPushTickerPrice m_PushTickerPrice;
+
 	CPluginPushKLData	m_PushKLData;
 	CPluginPushRTData	m_PushRTData;
+	CPluginPlatesetIDs  m_platesetIDs;
+
+	CPluginPlateSubIDs  m_plateSubIDs;
+	CPluginBrokerQueue  m_BrokerQueue;
+	CPluginGlobalState	m_GlobalState;
+
+	CTimerMsgWndEx m_TimerWnd;
+	UINT m_nTimerIDRefreshRTKL;
+	std::vector<tagRTKLDataRefresh> m_vtRTKLRefresh;
+	
 };
